@@ -1,0 +1,16 @@
+[workspace]
+members = ["parsers"]
+resolver = "2"
+
+[package]
+name = "katha"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "katha"
+path = "src/main.rs"
+
+[dependencies]
+katha-parsers = { path = "parsers" }
+serde_json = "1.0.140"
