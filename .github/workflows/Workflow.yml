@@ -105,15 +105,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CRATE_TOKEN }}
-      VERSION: ${{ needs.prep.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Publish parser crate
         run: |
-          if curl -fsS "https://crates.io/api/v1/crates/katha-parsers/${VERSION}" >/dev/null; then
-            echo "katha-parsers ${VERSION} already published; skipping."
+          if curl -fsS "https://crates.io/api/v1/crates/katha-parsers/${{ needs.prep.outputs.version }}" >/dev/null; then
+            echo "katha-parsers ${{ needs.prep.outputs.version }} already published; skipping."
           else
             cargo publish -p katha-parsers --token "${CARGO_REGISTRY_TOKEN}"
           fi
@@ -121,19 +120,19 @@ jobs:
       - name: Wait for parser crate availability
         run: |
           for _ in $(seq 1 20); do
-            if curl -fsS "https://crates.io/api/v1/crates/katha-parsers/${VERSION}" >/dev/null; then
-              echo "katha-parsers ${VERSION} is available on crates.io"
+            if curl -fsS "https://crates.io/api/v1/crates/katha-parsers/${{ needs.prep.outputs.version }}" >/dev/null; then
+              echo "katha-parsers ${{ needs.prep.outputs.version }} is available on crates.io"
               exit 0
             fi
             sleep 15
           done
-          echo "katha-parsers ${VERSION} did not appear on crates.io in time"
+          echo "katha-parsers ${{ needs.prep.outputs.version }} did not appear on crates.io in time"
           exit 1
 
       - name: Publish CLI crate
         run: |
-          if curl -fsS "https://crates.io/api/v1/crates/katha/${VERSION}" >/dev/null; then
-            echo "katha ${VERSION} already published; skipping."
+          if curl -fsS "https://crates.io/api/v1/crates/katha/${{ needs.prep.outputs.version }}" >/dev/null; then
+            echo "katha ${{ needs.prep.outputs.version }} already published; skipping."
           else
             cargo publish -p katha --token "${CARGO_REGISTRY_TOKEN}"
           fi

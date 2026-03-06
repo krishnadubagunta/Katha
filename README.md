@@ -1,4 +1,5 @@
 # Katha
+[![Rust CI](https://github.com/krishnadubagunta/Katha/actions/workflows/Workflow.yml/badge.svg)](https://github.com/krishnadubagunta/Katha/actions/workflows/Workflow.yml)
 
 Katha is a Rust CLI for parsing file-based book formats using an internal parser library crate.
 
