@@ -45,6 +45,11 @@ struct SectionDraft {
     children: Vec<SectionDraft>,
 }
 
+/// DOCX parser adapter.
+///
+/// This parser reads `word/document.xml` and metadata from `docProps/core.xml`,
+/// derives a heading tree from paragraph styles, and returns normalized output
+/// through the crate-level [`crate::Parser`] trait.
 pub struct Docx {
     source: Option<String>,
     parsed: Option<ParsedDocx>,
@@ -52,6 +57,7 @@ pub struct Docx {
 }
 
 impl Docx {
+    /// Creates a new DOCX parser instance with no bound source.
     pub fn new() -> Self {
         Self {
             source: None,

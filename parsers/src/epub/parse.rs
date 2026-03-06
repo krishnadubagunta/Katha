@@ -12,6 +12,10 @@ use epub::doc::EpubDoc;
 use epub::doc::NavPoint;
 use html2md::parse_html;
 
+/// EPUB parser adapter.
+///
+/// This type implements [`crate::Parser`] and converts EPUB metadata and chapter
+/// content into the normalized [`crate::Document`] schema.
 pub struct Epub {
     source: Option<String>,
     doc: Option<EpubDoc<BufReader<File>>>,
@@ -19,6 +23,7 @@ pub struct Epub {
 }
 
 impl Epub {
+    /// Creates a new EPUB parser instance with no bound source.
     pub fn new() -> Self {
         Self {
             source: None,
