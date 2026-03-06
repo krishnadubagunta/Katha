@@ -3,6 +3,7 @@ name = "katha-parsers"
 version = "0.1.0"
 edition = "2024"
 description = "Parser adapters for EPUB, DOCX, and PDF document ingestion."
+license = "MIT"
 authors = ["krishnadubagunta"]
 
 [lib]
