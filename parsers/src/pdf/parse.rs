@@ -18,6 +18,11 @@ struct ParsedPdf {
     headings: Vec<Heading>,
 }
 
+/// PDF parser adapter.
+///
+/// This parser extracts plain text from the source PDF, applies heading
+/// heuristics to build a table of contents, and returns normalized content
+/// through the crate-level [`crate::Parser`] contract.
 pub struct Pdf {
     source: Option<String>,
     parsed: Option<ParsedPdf>,
@@ -25,6 +30,7 @@ pub struct Pdf {
 }
 
 impl Pdf {
+    /// Creates a new PDF parser instance with no bound source.
     pub fn new() -> Self {
         Self {
             source: None,
