@@ -2,21 +2,163 @@ name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
+  CLI_NAME: katha
 
 jobs:
-  build:
-
+  ci:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run package tests
+        run: cargo test -p katha-parsers --verbose
+
+      - name: Run cli tests
+        run: cargo test --verbose
+
+  prep:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: ci
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read CLI version
+        id: meta
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build_release_assets:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_suffix: linux-x86_64
+            is_windows: "false"
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_suffix: macos-aarch64
+            is_windows: "false"
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_suffix: windows-x86_64
+            is_windows: "true"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --verbose
+
+      - name: Package Unix binary
+        if: matrix.is_windows == 'false'
+        shell: bash
+        run: |
+          mkdir -p dist
+          out="${CLI_NAME}-${{ needs.prep.outputs.version }}-${{ matrix.asset_suffix }}"
+          cp "target/${{ matrix.target }}/release/${CLI_NAME}" "dist/${out}"
+          tar -C dist -czf "dist/${out}.tar.gz" "${out}"
+
+      - name: Package Windows binary
+        if: matrix.is_windows == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $out = "${env:CLI_NAME}-${{ needs.prep.outputs.version }}-${{ matrix.asset_suffix }}.exe"
+          Copy-Item "target/${{ matrix.target }}/release/${env:CLI_NAME}.exe" "dist/$out"
+          Compress-Archive -Path "dist/$out" -DestinationPath "dist/$out.zip" -Force
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.asset_suffix }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  publish_crates:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: prep
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CRATE_TOKEN }}
+      VERSION: ${{ needs.prep.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish parser crate
+        run: |
+          if curl -fsS "https://crates.io/api/v1/crates/katha-parsers/${VERSION}" >/dev/null; then
+            echo "katha-parsers ${VERSION} already published; skipping."
+          else
+            cargo publish -p katha-parsers --token "${CARGO_REGISTRY_TOKEN}"
+          fi
+
+      - name: Wait for parser crate availability
+        run: |
+          for _ in $(seq 1 20); do
+            if curl -fsS "https://crates.io/api/v1/crates/katha-parsers/${VERSION}" >/dev/null; then
+              echo "katha-parsers ${VERSION} is available on crates.io"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "katha-parsers ${VERSION} did not appear on crates.io in time"
+          exit 1
+
+      - name: Publish CLI crate
+        run: |
+          if curl -fsS "https://crates.io/api/v1/crates/katha/${VERSION}" >/dev/null; then
+            echo "katha ${VERSION} already published; skipping."
+          else
+            cargo publish -p katha --token "${CARGO_REGISTRY_TOKEN}"
+          fi
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [prep, build_release_assets, publish_crates]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packaged binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-assets-*
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ needs.prep.outputs.version }}"
+          name: "v${{ needs.prep.outputs.version }}"
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+          generate_release_notes: true
