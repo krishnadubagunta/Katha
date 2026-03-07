@@ -12,7 +12,7 @@ name = "katha"
 path = "src/main.rs"
 
 [dependencies]
-katha-parsers = { version = "0.1.0", path = "parsers" }
+katha-parsers = { version = "0.1.1", path = "parsers" }
 serde_json = "1.0.140"
 
 [dev-dependencies]
