@@ -30,12 +30,38 @@ pub struct Document {
     pub author: String,
     /// Language code or language label reported by the source document.
     pub language: String,
-    /// Human-readable description in markdown/plain text.
+    /// Human-readable description in plain text.
     pub description: String,
     /// Hierarchical table of contents.
     pub toc: Vec<Section>,
     /// Parsed chapter/section content keyed by [`Section::content_ref`].
-    pub content: HashMap<usize, String>,
+    pub content: HashMap<usize, Vec<ContentBlock>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Semantic content block extracted from a document section.
+pub enum ContentKind {
+    Heading,
+    List,
+    Paragraph,
+    Quote,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A normalized content block containing plain text.
+pub struct ContentBlock {
+    /// Block semantic kind.
+    pub kind: ContentKind,
+    /// Plain text content for heading/paragraph/quote blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Plain text list items for list blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<String>,
+    /// Heading depth when [`ContentKind::Heading`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,8 +100,8 @@ pub trait Parser {
     /// Builds a hierarchical table of contents.
     fn get_toc(&mut self) -> Result<Vec<Section>, ParserError>;
     /// Returns parsed content chunks keyed by `content_ref`.
-    fn get_content_by_chapter(&mut self) -> Result<HashMap<usize, String>, ParserError>;
-    /// Converts parser-specific HTML/content fragments into markdown/plain text.
+    fn get_content_by_chapter(&mut self) -> Result<HashMap<usize, Vec<ContentBlock>>, ParserError>;
+    /// Converts parser-specific HTML/content fragments into plain text.
     fn clean_html(html: &str) -> Result<String, ParserError>
     where
         Self: Sized;

@@ -1,16 +1,21 @@
+use serde_json::Value;
 use std::fs::File;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zip::write::FileOptions;
 use zip::ZipWriter;
+use zip::write::FileOptions;
 
 fn unique_path(prefix: &str, suffix: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time should be monotonic")
         .as_nanos();
-    std::env::temp_dir().join(format!("katha_cli_{prefix}_{}_{}{suffix}", std::process::id(), nanos))
+    std::env::temp_dir().join(format!(
+        "katha_cli_{prefix}_{}_{}{suffix}",
+        std::process::id(),
+        nanos
+    ))
 }
 
 fn run_katha(args: &[&str]) -> std::process::Output {
@@ -99,11 +104,22 @@ fn prints_document_json_for_valid_docx_file() {
     let output = run_katha(&[docx_path.to_string_lossy().as_ref()]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let json: Value = serde_json::from_str(&stdout).expect("stdout should be valid json");
 
     assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
-    assert!(stdout.contains("\"title\": \"CLI Test Book\""));
-    assert!(stdout.contains("\"toc\""));
-    assert!(stdout.contains("\"content\""));
+    assert_eq!(json["title"], "CLI Test Book");
+    assert!(json.get("toc").is_some());
+    assert!(json.get("content").is_some());
+
+    let chapter_content = json["content"]["0"]
+        .as_array()
+        .expect("chapter content should be an array of content blocks");
+    assert_eq!(chapter_content.len(), 2);
+    assert_eq!(chapter_content[0]["kind"], "heading");
+    assert_eq!(chapter_content[0]["content"], "Chapter 1");
+    assert_eq!(chapter_content[0]["level"], 1);
+    assert_eq!(chapter_content[1]["kind"], "paragraph");
+    assert_eq!(chapter_content[1]["content"], "Hello world.");
 
     std::fs::remove_file(docx_path).expect("should remove fixture");
 }

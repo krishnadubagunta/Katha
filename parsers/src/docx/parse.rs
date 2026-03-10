@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
+use crate::ContentBlock;
+use crate::ContentKind;
 use crate::error::ParserError;
 use crate::{Document, Parser, Section};
 use quick_xml::Reader;
@@ -297,13 +299,31 @@ impl Docx {
         }
     }
 
-    fn content_from_paragraphs(paragraphs: &[Paragraph]) -> String {
+    fn content_from_paragraphs(paragraphs: &[Paragraph]) -> Vec<ContentBlock> {
         paragraphs
             .iter()
-            .map(|p| p.text.trim())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n")
+            .filter_map(|paragraph| {
+                let text = paragraph.text.trim().to_string();
+                if text.is_empty() {
+                    return None;
+                }
+
+                let level = paragraph
+                    .heading_level
+                    .and_then(|level| u8::try_from(level).ok());
+
+                Some(ContentBlock {
+                    kind: if level.is_some() {
+                        ContentKind::Heading
+                    } else {
+                        ContentKind::Paragraph
+                    },
+                    content: Some(text),
+                    items: Vec::new(),
+                    level,
+                })
+            })
+            .collect()
     }
 }
 
@@ -417,7 +437,7 @@ impl Parser for Docx {
         Ok(tree.into_iter().map(Self::draft_to_section).collect())
     }
 
-    fn get_content_by_chapter(&mut self) -> Result<HashMap<usize, String>, ParserError> {
+    fn get_content_by_chapter(&mut self) -> Result<HashMap<usize, Vec<ContentBlock>>, ParserError> {
         let parsed = self.ensure_parsed()?;
         let mut content = HashMap::new();
 
@@ -433,8 +453,8 @@ impl Parser for Docx {
                 .get(idx + 1)
                 .map(|next| next.para_index)
                 .unwrap_or(parsed.paragraphs.len());
-            let md = Self::content_from_paragraphs(&parsed.paragraphs[start..end]);
-            content.insert(heading.content_ref, md);
+            let blocks = Self::content_from_paragraphs(&parsed.paragraphs[start..end]);
+            content.insert(heading.content_ref, blocks);
         }
 
         Ok(content)
