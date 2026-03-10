@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "katha"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 
 [[bin]]
@@ -12,7 +12,7 @@ name = "katha"
 path = "src/main.rs"
 
 [dependencies]
-katha-parsers = { version = "0.1.1", path = "parsers" }
+katha-parsers = { version = "0.2.0", path = "parsers" }
 serde_json = "1.0.140"
 
 [dev-dependencies]

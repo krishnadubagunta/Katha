@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::ContentBlock;
+use crate::ContentKind;
 use crate::error::ParserError;
 use crate::{Document, Parser, Section};
 use regex::Regex;
@@ -95,13 +97,18 @@ impl Pdf {
         headings
     }
 
-    fn lines_to_markdown(lines: &[String]) -> String {
+    fn lines_to_content(lines: &[String]) -> Vec<ContentBlock> {
         lines
             .iter()
             .map(|line| line.trim())
             .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n")
+            .map(|line| ContentBlock {
+                kind: ContentKind::Paragraph,
+                content: Some(line.to_string()),
+                items: Vec::new(),
+                level: None,
+            })
+            .collect()
     }
 }
 
@@ -199,12 +206,12 @@ impl Parser for Pdf {
         Ok(sections)
     }
 
-    fn get_content_by_chapter(&mut self) -> Result<HashMap<usize, String>, ParserError> {
+    fn get_content_by_chapter(&mut self) -> Result<HashMap<usize, Vec<ContentBlock>>, ParserError> {
         let parsed = self.ensure_parsed()?;
         let mut content = HashMap::new();
 
         if parsed.headings.is_empty() {
-            content.insert(0, Self::lines_to_markdown(&parsed.lines));
+            content.insert(0, Self::lines_to_content(&parsed.lines));
             return Ok(content);
         }
 
@@ -215,8 +222,31 @@ impl Parser for Pdf {
                 .get(idx + 1)
                 .map(|next| next.line_index)
                 .unwrap_or(parsed.lines.len());
-            let markdown = Self::lines_to_markdown(&parsed.lines[start..end]);
-            content.insert(heading.content_ref, markdown);
+            let mut blocks = Vec::new();
+            for (offset, line) in parsed.lines[start..end].iter().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                if offset == 0 {
+                    blocks.push(ContentBlock {
+                        kind: ContentKind::Heading,
+                        content: Some(trimmed.to_string()),
+                        items: Vec::new(),
+                        level: Some(1),
+                    });
+                } else {
+                    blocks.push(ContentBlock {
+                        kind: ContentKind::Paragraph,
+                        content: Some(trimmed.to_string()),
+                        items: Vec::new(),
+                        level: None,
+                    });
+                }
+            }
+
+            content.insert(heading.content_ref, blocks);
         }
 
         Ok(content)
