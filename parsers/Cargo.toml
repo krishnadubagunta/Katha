@@ -1,6 +1,6 @@
 [package]
 name = "katha-parsers"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Parser adapters for EPUB, DOCX, and PDF document ingestion."
 license = "MIT"

@@ -15,7 +15,9 @@ impl ParserError {
     /// use katha_parsers::error::ParserError;
     ///
     /// assert_eq!(ParserError::FileDoesNotExist.code(), 3006);
+    /// assert_eq!(ParserError::UnreadableFile.code(), 4005);
     /// assert_eq!(ParserError::UndefinedParser.code(), 4006);
+    /// assert_eq!(ParserError::InvalidContent.code(), 4007);
     /// ```
     pub const fn code(self) -> i32 {
         match self {
@@ -33,7 +35,9 @@ impl ParserError {
     /// ```
     /// use katha_parsers::error::ParserError;
     ///
+    /// assert_eq!(ParserError::FileDoesNotExist.message(), "File does not exist");
     /// assert_eq!(ParserError::UnreadableFile.message(), "Unreadable file");
+    /// assert_eq!(ParserError::UndefinedParser.message(), "Undefined parser error");
     /// assert_eq!(ParserError::InvalidContent.message(), "Invalid content");
     /// ```
     pub const fn message(self) -> &'static str {
