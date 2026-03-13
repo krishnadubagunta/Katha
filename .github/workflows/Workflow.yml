@@ -120,7 +120,7 @@ jobs:
       - name: Wait for parser crate availability
         run: |
           for _ in $(seq 1 20); do
-            if curl -fsS "https://crates.io/api/v1/crates/katha-parsers/${{ needs.prep.outputs.version }}" >/dev/null; then
+            if curl --head --fail --silent "https://crates.io/api/v1/crates/katha-parsers/${{ needs.prep.outputs.version }}" >/dev/null; then
               echo "katha-parsers ${{ needs.prep.outputs.version }} is available on crates.io"
               exit 0
             fi
