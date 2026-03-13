@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "katha"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "katha-parsers",
  "serde_json",
@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "katha-parsers"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "epub",
