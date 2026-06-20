@@ -1,30 +1,38 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use kuchiki::traits::*;
+use pdf_oxide::converters::ConversionOptions;
+use pdf_oxide::document::PdfDocument;
+use pdf_oxide::{Destination, OutlineItem};
+
 use crate::ContentBlock;
 use crate::ContentKind;
 use crate::error::ParserError;
+use crate::html::{
+    block_from_node, blocks_to_content, blocks_to_plain_text, clean_dom, extract_clean_blocks,
+    html_to_text,
+};
 use crate::{Document, Parser, Section};
-use regex::Regex;
 
 #[derive(Debug, Clone)]
-struct Heading {
+struct PdfSection {
     title: String,
-    line_index: usize,
     content_ref: usize,
+    blocks: Vec<ContentBlock>,
 }
 
 #[derive(Debug, Clone)]
 struct ParsedPdf {
-    lines: Vec<String>,
-    headings: Vec<Heading>,
+    sections: Vec<PdfSection>,
 }
 
 /// PDF parser adapter.
 ///
-/// This parser extracts plain text from the source PDF, applies heading
-/// heuristics to build a table of contents, and returns normalized content
-/// through the crate-level [`crate::Parser`] contract.
+/// Uses the PDF's own outline (bookmark tree) to determine chapter boundaries.
+/// Per chapter, text is extracted via the shared HTML pipeline, tables via
+/// `extract_tables`, and embedded images via `extract_images`.
+/// Falls back to heading-based splitting when the document has no outline.
 pub struct Pdf {
     source: Option<String>,
     parsed: Option<ParsedPdf>,
@@ -32,7 +40,6 @@ pub struct Pdf {
 }
 
 impl Pdf {
-    /// Creates a new PDF parser instance with no bound source.
     pub fn new() -> Self {
         Self {
             source: None,
@@ -41,74 +48,326 @@ impl Pdf {
         }
     }
 
-    fn ensure_parsed(&mut self) -> Result<&ParsedPdf, ParserError> {
-        if self.parsed.is_none() {
-            let src = self.source.clone().ok_or(ParserError::UnreadableFile)?;
-            let text = pdf_extract::extract_text(&src).map_err(|_| ParserError::UnreadableFile)?;
-
-            let lines: Vec<String> = text
-                .lines()
-                .map(|line| line.trim().to_string())
-                .filter(|line| !line.is_empty())
-                .collect();
-            let headings = Self::detect_headings(&lines);
-
-            self.parsed = Some(ParsedPdf { lines, headings });
+    /// Flatten a nested outline into DFS order: (title, page_0indexed).
+    fn flatten_outline(items: &[OutlineItem]) -> Vec<(String, usize)> {
+        let mut result = Vec::new();
+        for item in items {
+            if let Some(Destination::PageIndex(page)) = item.dest {
+                result.push((item.title.trim().to_string(), page));
+            }
+            if !item.children.is_empty() {
+                result.extend(Self::flatten_outline(&item.children));
+            }
         }
-
-        self.parsed.as_ref().ok_or(ParserError::UnreadableFile)
+        result
     }
 
-    fn detect_headings(lines: &[String]) -> Vec<Heading> {
-        let numbered_heading = Regex::new(r"^\d+(\.\d+)*\s+\S+").ok();
-        let chapter_heading = Regex::new(r"^(chapter|part|section)\b").ok();
+    /// Parse the combined HTML (from `to_html_all`) into text blocks keyed by
+    /// 0-indexed page number.
+    fn text_blocks_by_page(
+        html: &str,
+    ) -> HashMap<usize, Vec<crate::html::TextBlock>> {
+        let document = kuchiki::parse_html().one(html);
+        clean_dom(&document);
 
-        let mut headings = Vec::new();
-        for (idx, line) in lines.iter().enumerate() {
-            let compact = line.trim();
-            if compact.is_empty() || compact.len() > 120 {
+        let mut map: HashMap<usize, Vec<crate::html::TextBlock>> = HashMap::new();
+
+        let Ok(page_divs) = document.select("div.page") else {
+            return map;
+        };
+
+        for page_div in page_divs {
+            let page_0idx = {
+                let attrs = page_div.attributes.borrow();
+                match attrs.get("data-page").and_then(|s| s.parse::<usize>().ok()) {
+                    Some(n) if n > 0 => n - 1,
+                    _ => continue,
+                }
+            };
+
+            let node = page_div.as_node();
+            let Ok(elements) = node.select("h1, h2, h3, p, blockquote, ul, ol") else {
+                continue;
+            };
+
+            let page_blocks: Vec<_> = elements
+                .filter_map(|m| {
+                    let tag = m.name.local.as_ref();
+                    block_from_node(&m.as_node().clone(), tag)
+                })
+                .collect();
+
+            map.insert(page_0idx, page_blocks);
+        }
+
+        map
+    }
+
+    /// Extract table blocks from a single page.
+    fn table_blocks_for_page(doc: &PdfDocument, page: usize) -> Vec<ContentBlock> {
+        let Ok(tables) = doc.extract_tables(page) else {
+            return Vec::new();
+        };
+
+        tables
+            .into_iter()
+            .filter_map(|table| {
+                let items: Vec<String> = table
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        row.cells
+                            .iter()
+                            .map(|c| c.text.trim().to_string())
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    })
+                    .filter(|row| !row.trim().is_empty())
+                    .collect();
+
+                if items.is_empty() {
+                    return None;
+                }
+
+                Some(ContentBlock {
+                    kind: ContentKind::Table,
+                    content: None,
+                    items,
+                    level: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Extract image (figure) blocks from a single page.
+    fn figure_blocks_for_page(doc: &PdfDocument, page: usize) -> Vec<ContentBlock> {
+        let Ok(images) = doc.extract_images(page) else {
+            return Vec::new();
+        };
+
+        images
+            .into_iter()
+            .filter_map(|img| {
+                let uri = img.to_base64_data_uri().ok()?;
+                Some(ContentBlock {
+                    kind: ContentKind::Figure,
+                    content: Some(uri),
+                    items: Vec::new(),
+                    level: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Assemble all content blocks for a page range: text → tables → figures,
+    /// in page order.
+    fn blocks_for_pages(
+        doc: &PdfDocument,
+        text_by_page: &HashMap<usize, Vec<crate::html::TextBlock>>,
+        pages: std::ops::Range<usize>,
+    ) -> Vec<ContentBlock> {
+        let mut all = Vec::new();
+        for page in pages {
+            // Text
+            if let Some(text_blocks) = text_by_page.get(&page) {
+                all.extend(blocks_to_content(text_blocks));
+            }
+            // Tables
+            all.extend(Self::table_blocks_for_page(doc, page));
+            // Figures
+            all.extend(Self::figure_blocks_for_page(doc, page));
+        }
+        all
+    }
+
+    fn build_outline_sections(
+        doc: &PdfDocument,
+        html: &str,
+        outline_items: &[(String, usize)],
+        page_count: usize,
+    ) -> Vec<PdfSection> {
+        let text_by_page = Self::text_blocks_by_page(html);
+        let mut sections = Vec::new();
+
+        for (idx, (title, start_page)) in outline_items.iter().enumerate() {
+            let end_page = outline_items
+                .get(idx + 1)
+                .map(|(_, p)| *p)
+                .unwrap_or(page_count);
+
+            let blocks =
+                Self::blocks_for_pages(doc, &text_by_page, *start_page..end_page);
+            if blocks.is_empty() {
                 continue;
             }
 
-            let lower = compact.to_ascii_lowercase();
-            let looks_chapter = chapter_heading
-                .as_ref()
-                .map(|re| re.is_match(&lower))
-                .unwrap_or(false);
-            let looks_numbered = numbered_heading
-                .as_ref()
-                .map(|re| re.is_match(compact))
-                .unwrap_or(false);
-            let looks_all_caps = compact.len() > 4
-                && compact
-                    .chars()
-                    .all(|c| !c.is_alphabetic() || c.is_uppercase());
+            sections.push(PdfSection {
+                title: title.clone(),
+                content_ref: sections.len(),
+                blocks,
+            });
+        }
 
-            if looks_chapter || looks_numbered || looks_all_caps {
-                let content_ref = headings.len();
-                headings.push(Heading {
-                    title: compact.to_string(),
-                    line_index: idx,
-                    content_ref,
+        sections
+    }
+
+    fn build_heading_sections(
+        doc: &PdfDocument,
+        html: &str,
+        page_count: usize,
+    ) -> Vec<PdfSection> {
+        let text_by_page = Self::text_blocks_by_page(html);
+
+        // Collect all text blocks in page order to find heading positions.
+        let all_text_blocks: Vec<crate::html::TextBlock> = (0..page_count)
+            .flat_map(|p| {
+                text_by_page
+                    .get(&p)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                    .iter()
+                    .cloned()
+            })
+            .collect();
+
+        let all_blocks = blocks_to_content(&all_text_blocks);
+        if all_blocks.is_empty() {
+            return Vec::new();
+        }
+
+        // Split on h1 only; fall back to all headings if none.
+        let h1_indices: Vec<usize> = all_blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.kind == ContentKind::Heading && b.level == Some(1))
+            .map(|(i, _)| i)
+            .collect();
+
+        let heading_indices: Vec<usize> = if h1_indices.is_empty() {
+            all_blocks
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.kind == ContentKind::Heading)
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            h1_indices
+        };
+
+        if heading_indices.is_empty() {
+            // No headings at all — one section for the full document.
+            let blocks = Self::blocks_for_pages(doc, &text_by_page, 0..page_count);
+            return if blocks.is_empty() {
+                Vec::new()
+            } else {
+                vec![PdfSection {
+                    title: "Document".to_string(),
+                    content_ref: 0,
+                    blocks,
+                }]
+            };
+        }
+
+        // Group consecutive h1s with no body content between them into one title.
+        let mut chapter_starts: Vec<Vec<usize>> = Vec::new();
+        for &idx in &heading_indices {
+            let prev_end = chapter_starts
+                .last()
+                .and_then(|g| g.last())
+                .copied()
+                .map(|i| i + 1)
+                .unwrap_or(0);
+
+            let has_body = all_blocks[prev_end..idx]
+                .iter()
+                .any(|b| b.kind != ContentKind::Heading);
+
+            if has_body || chapter_starts.is_empty() {
+                chapter_starts.push(vec![idx]);
+            } else {
+                chapter_starts.last_mut().unwrap().push(idx);
+            }
+        }
+
+        // For heading-based splitting we don't have page boundaries per chapter,
+        // so tables and figures can't be assigned to chapters without positional
+        // data. Collect all tables+figures once and append after last chapter.
+        // TODO: use bbox info from pdf_oxide to interleave properly.
+        let mut sections = Vec::new();
+        for (pos, title_indices) in chapter_starts.iter().enumerate() {
+            let first = title_indices[0];
+            let end = chapter_starts
+                .get(pos + 1)
+                .and_then(|g| g.first())
+                .copied()
+                .unwrap_or(all_blocks.len());
+
+            let title = title_indices
+                .iter()
+                .filter_map(|&i| all_blocks[i].content.as_deref())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let blocks = all_blocks[first..end].to_vec();
+            if !blocks.is_empty() {
+                sections.push(PdfSection {
+                    title,
+                    content_ref: sections.len(),
+                    blocks,
                 });
             }
         }
 
-        headings
+        sections
     }
 
-    fn lines_to_content(lines: &[String]) -> Vec<ContentBlock> {
-        lines
-            .iter()
-            .map(|line| line.trim())
-            .filter(|line| !line.is_empty())
-            .map(|line| ContentBlock {
-                kind: ContentKind::Paragraph,
-                content: Some(line.to_string()),
-                items: Vec::new(),
-                level: None,
-            })
-            .collect()
+    fn ensure_parsed(&mut self) -> Result<&ParsedPdf, ParserError> {
+        if self.parsed.is_none() {
+            let src = self.source.clone().ok_or(ParserError::UnreadableFile)?;
+            let doc =
+                PdfDocument::open(&src).map_err(|_| ParserError::UnreadableFile)?;
+
+            let outline_flat = doc
+                .get_outline()
+                .ok()
+                .flatten()
+                .map(|items| Self::flatten_outline(&items))
+                .unwrap_or_default();
+
+            let page_count = doc
+                .page_count()
+                .map_err(|_| ParserError::UnreadableFile)?;
+
+            let sections = if outline_flat.len() > 5 {
+                let options = ConversionOptions {
+                    preserve_layout: false,
+                    detect_headings: false,
+                    extract_tables: false, // we call extract_tables ourselves per page
+                    include_images: false,
+                    ..Default::default()
+                };
+                let html = doc
+                    .to_html_all(&options)
+                    .map_err(|_| ParserError::UnreadableFile)?;
+                Self::build_outline_sections(&doc, &html, &outline_flat, page_count)
+            } else {
+                let options = ConversionOptions {
+                    preserve_layout: false,
+                    detect_headings: true,
+                    extract_tables: false,
+                    include_images: false,
+                    ..Default::default()
+                };
+                let html = doc
+                    .to_html_all(&options)
+                    .map_err(|_| ParserError::UnreadableFile)?;
+                Self::build_heading_sections(&doc, &html, page_count)
+            };
+
+            self.parsed = Some(ParsedPdf { sections });
+        }
+
+        self.parsed.as_ref().ok_or(ParserError::UnreadableFile)
     }
 }
 
@@ -135,7 +394,10 @@ impl Parser for Pdf {
             content: HashMap::new(),
         });
 
-        let content = self.get_content_by_chapter().unwrap_or_default();
+        let content = self.get_content_by_chapter()?;
+        if content.is_empty() {
+            return Err(ParserError::InvalidContent);
+        }
         if let Some(document) = self.document.as_mut() {
             document.content = content;
         }
@@ -183,72 +445,29 @@ impl Parser for Pdf {
 
     fn get_toc(&mut self) -> Result<Vec<Section>, ParserError> {
         let parsed = self.ensure_parsed()?;
-        if parsed.headings.is_empty() {
-            return Ok(vec![Section {
-                id: "sec_000001".to_string(),
-                title: "Document".to_string(),
-                content_ref: 0,
-                children: Vec::new(),
-            }]);
-        }
-
         let sections = parsed
-            .headings
+            .sections
             .iter()
             .enumerate()
-            .map(|(idx, heading)| Section {
+            .map(|(idx, s)| Section {
                 id: format!("sec_{:06}", idx + 1),
-                title: heading.title.clone(),
-                content_ref: heading.content_ref,
+                title: s.title.clone(),
+                content_ref: s.content_ref,
                 children: Vec::new(),
             })
             .collect();
         Ok(sections)
     }
 
-    fn get_content_by_chapter(&mut self) -> Result<HashMap<usize, Vec<ContentBlock>>, ParserError> {
+    fn get_content_by_chapter(
+        &mut self,
+    ) -> Result<HashMap<usize, Vec<ContentBlock>>, ParserError> {
         let parsed = self.ensure_parsed()?;
-        let mut content = HashMap::new();
-
-        if parsed.headings.is_empty() {
-            content.insert(0, Self::lines_to_content(&parsed.lines));
-            return Ok(content);
-        }
-
-        for (idx, heading) in parsed.headings.iter().enumerate() {
-            let start = heading.line_index;
-            let end = parsed
-                .headings
-                .get(idx + 1)
-                .map(|next| next.line_index)
-                .unwrap_or(parsed.lines.len());
-            let mut blocks = Vec::new();
-            for (offset, line) in parsed.lines[start..end].iter().enumerate() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-
-                if offset == 0 {
-                    blocks.push(ContentBlock {
-                        kind: ContentKind::Heading,
-                        content: Some(trimmed.to_string()),
-                        items: Vec::new(),
-                        level: Some(1),
-                    });
-                } else {
-                    blocks.push(ContentBlock {
-                        kind: ContentKind::Paragraph,
-                        content: Some(trimmed.to_string()),
-                        items: Vec::new(),
-                        level: None,
-                    });
-                }
-            }
-
-            content.insert(heading.content_ref, blocks);
-        }
-
+        let content = parsed
+            .sections
+            .iter()
+            .map(|s| (s.content_ref, s.blocks.clone()))
+            .collect();
         Ok(content)
     }
 
@@ -256,6 +475,10 @@ impl Parser for Pdf {
     where
         Self: Sized,
     {
-        Ok(html.to_string())
+        let blocks = extract_clean_blocks(html);
+        if blocks.is_empty() {
+            return Ok(html_to_text(html));
+        }
+        Ok(blocks_to_plain_text(&blocks))
     }
 }

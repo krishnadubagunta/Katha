@@ -350,7 +350,10 @@ impl Parser for Docx {
             content: HashMap::new(),
         });
 
-        let content = self.get_content_by_chapter().unwrap_or_default();
+        let content = self.get_content_by_chapter()?;
+        if content.is_empty() {
+            return Err(ParserError::InvalidContent);
+        }
         if let Some(document) = self.document.as_mut() {
             document.content = content;
         }

@@ -60,6 +60,8 @@ pub mod docx;
 pub mod epub;
 /// Parser error model and exit-code mapping.
 pub mod error;
+/// Shared HTML cleaning and block-extraction pipeline.
+pub(crate) mod html;
 /// PDF parser adapter.
 pub mod pdf;
 
@@ -102,6 +104,12 @@ pub enum ContentKind {
     List,
     Paragraph,
     Quote,
+    /// Tabular data extracted from a PDF table. Each item is one row, with
+    /// cells joined by ` | `. The first item is the header row when present.
+    Table,
+    /// Embedded image or figure. `content` holds a base64 data URI
+    /// (`data:image/png;base64,...`) suitable for storage and re-rendering.
+    Figure,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -116,6 +116,9 @@ fn assert_block_matches_canonical_contract(block: &ContentBlock) {
                 "list blocks must carry at least one list item"
             );
         }
+        ContentKind::Table | ContentKind::Figure => {
+            // PDF-only kinds — not produced by the DOCX parser.
+        }
     }
 }
 

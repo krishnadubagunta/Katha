@@ -17,7 +17,7 @@ base64 = "0.21"
 quick-xml = "0.38.1"
 zip = "0.6.6"
 regex = "1.11.1"
-pdf-extract = "0.7.8"
+pdf_oxide = "0.3"
 kuchiki = "0.8.1"
 
 [dev-dependencies]

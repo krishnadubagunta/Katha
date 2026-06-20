@@ -119,15 +119,23 @@ jobs:
 
       - name: Wait for parser crate availability
         run: |
+          found=false
+
           for _ in $(seq 1 20); do
-            if curl --head --fail --silent "https://crates.io/api/v1/crates/katha-parsers/${{ needs.prep.outputs.version }}" >/dev/null; then
-              echo "katha-parsers ${{ needs.prep.outputs.version }} is available on crates.io"
-              exit 0
+            if curl -fsS "https://crates.io/api/v1/crates/katha-parsers/${{ needs.prep.outputs.version }}" >/dev/null; then
+              found=true
+              break
             fi
+
             sleep 15
           done
-          echo "katha-parsers ${{ needs.prep.outputs.version }} did not appear on crates.io in time"
-          exit 1
+
+          if [ "$found" = true ]; then
+            echo "katha-parsers ${{ needs.prep.outputs.version }} is available on crates.io"
+          else
+            echo "katha-parsers ${{ needs.prep.outputs.version }} did not appear on crates.io in time"
+            exit 1
+          fi
 
       - name: Publish CLI crate
         run: |
