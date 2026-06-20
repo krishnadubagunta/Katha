@@ -109,8 +109,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Publish Crate
-        run: cargo publish
+      - name: Publish katha-parsers
+        run: cargo publish -p katha-parsers
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
