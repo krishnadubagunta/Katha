@@ -108,42 +108,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Publish parser crate
-        run: |
-          if curl -fsS "https://crates.io/api/v1/crates/katha-parsers/${{ needs.prep.outputs.version }}" >/dev/null; then
-            echo "katha-parsers ${{ needs.prep.outputs.version }} already published; skipping."
-          else
-            cargo publish -p katha-parsers --token "${CARGO_REGISTRY_TOKEN}"
-          fi
-
-      - name: Wait for parser crate availability
-        run: |
-          found=false
-
-          for _ in $(seq 1 20); do
-            if curl -fsS "https://crates.io/api/v1/crates/katha-parsers/${{ needs.prep.outputs.version }}" >/dev/null; then
-              found=true
-              break
-            fi
-
-            sleep 15
-          done
-
-          if [ "$found" = true ]; then
-            echo "katha-parsers ${{ needs.prep.outputs.version }} is available on crates.io"
-          else
-            echo "katha-parsers ${{ needs.prep.outputs.version }} did not appear on crates.io in time"
-            exit 1
-          fi
-
-      - name: Publish CLI crate
-        run: |
-          if curl -fsS "https://crates.io/api/v1/crates/katha/${{ needs.prep.outputs.version }}" >/dev/null; then
-            echo "katha ${{ needs.prep.outputs.version }} already published; skipping."
-          else
-            cargo publish -p katha --token "${CARGO_REGISTRY_TOKEN}"
-          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish Crate
+        run: cargo publish
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
